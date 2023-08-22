@@ -1,0 +1,42 @@
+name: Staging CI WebApp - EC2
+on: 
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+jobs:
+  dev-build-frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+      - name: Make envfile
+        uses: SpicyPizza/create-envfile@v1.2
+        with:
+          envkey_ENV: ${{ secrets.ENV }}
+          envkey_AWS_API_KEY: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          envkey_AWS_API_SECRET_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          envkey_AWS_REGION: ${{ secrets.AWS_REGION }}
+          directory: ${{ github.workspace }}
+          fail_on_empty: false
+          file_name: .env
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ secrets.AWS_REGION }}
+      - name: Login to Amazon ECR.
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v1
+      - name: Build, Tag, and Push the image to Amazon ECR Enviroment
+        id: build-image
+        run: |
+            aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URL }}
+            docker build . --file Dockerfile --tag ${{ secrets.AWS_ECR_URL_STAGING_FRONTEND }}:latest
+            docker push ${{ secrets.AWS_ECR_URL_STAGING_FRONTEND }}:latest
+      - name: Deploy to EC2 -> Staging Docker Swarm
+        run: |
+            echo "${{ secrets.KEY_DEPLOYER_PEM }}" > deployer_devops.pem
+            chmod 600 deployer_devops.pem    
+            ssh -o StrictHostKeyChecking=no -i deployer_devops.pem ${{ secrets.DNS_EC2 }} 'aws configure set aws_access_key_id ${{ secrets.AWS_ACCESS_KEY_ID }}; aws configure set aws_secret_access_key ${{ secrets.AWS_SECRET_ACCESS_KEY }}; aws configure set default.region ${{ secrets.AWS_REGION }}; aws ecr get-login-password --region ${{ secrets.AWS_REGION }} | docker login --username AWS --password-stdin ${{ secrets.AWS_ECR_URL }}; sudo docker service rm ${{ secrets.PROJECT_NAME }}; sudo docker rmi -f ${{ secrets.AWS_ECR_URL_STAGING_FRONTEND }}; docker image prune --yes ;sudo docker images ;sudo docker pull ${{ secrets.AWS_ECR_URL_STAGING_FRONTEND }}:latest;  sudo docker service create --name ${{ secrets.PROJECT_NAME }} -p 81:3000 --replicas 2 ${{ secrets.AWS_ECR_URL_STAGING_FRONTEND }}:latest ; sudo docker service ls'
+
